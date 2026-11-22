@@ -278,6 +278,8 @@ footer{position:relative;z-index:1;padding:32px clamp(18px,6vw,8vw);border-top:1
         <p class="lead" style="margin:0">Your email draft is ready. Send it to confirm your slot, or we’ll reach out to you directly.</p>
         <p id="okn" class="lead" style="margin:0"></p>
         <a class="btn solid" id="mail" href="#">Open email draft</a>
+        <a class="btn" id="gmail" href="#" target="_blank" rel="noopener">Send with Gmail</a>
+        <button class="btn" type="button" id="copyb">Copy booking details</button>
       </div>
     </form>
   </section>
@@ -321,7 +323,7 @@ footer{position:relative;z-index:1;padding:32px clamp(18px,6vw,8vw);border-top:1
 </div></div>
 
 <script>
-/* ===== 1. Supabase settings: replace the two values below (see the setup guide) ===== */
+/* ===== 1. Supabase settings ===== */
 const SB_URL='https://xchsqmkxnbfirtraegqr.supabase.co';
 const SB_KEY='sb_publishable_52mdGWSpgePrHwefjVWkdA_bmA9SgVN';
 const CONFIGURED=!SB_URL.includes('YOUR-')&&!SB_KEY.includes('YOUR-');
@@ -363,7 +365,7 @@ const DEF={
 };
 const FIELDS={projects:[['title','Title'],['tag','Tag'],['desc','Description','ta'],['link','Project link']],apps:[['title','App name'],['icon','Icon','sel'],['desc','Short description'],['link','Link']]};
 const CF=[['email','Email'],['phone','Phone'],['whatsapp','WhatsApp number'],['location','Location'],['hours','Working hours']];
-let C=JSON.parse(JSON.stringify(DEF)), TOKEN=null, tab='projects', editIdx=-1, view=null, BK=[];
+let C=JSON.parse(JSON.stringify(DEF)), TOKEN=null, tab='projects', editIdx=-1, view=null, BK=[], LAST_TEXT='';
 const merge=d=>({projects:d.projects||DEF.projects,apps:d.apps||DEF.apps,contact:Object.assign({},DEF.contact,d.contact||{})});
 
 const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}}),{threshold:.12,rootMargin:'0px 0px -30px 0px'});
@@ -375,7 +377,7 @@ function renderSite(){
   document.querySelectorAll('.reveal:not(.in),.step:not(.in)').forEach(el=>io.observe(el));
 }
 
-/* ===== 2. Database helpers (Supabase) ===== */
+/* ===== 2. Database (Supabase) ===== */
 async function sb(path,o={}){
   if(!CONFIGURED) throw new Error('Database is not connected yet.');
   const h={apikey:SB_KEY,'Content-Type':'application/json'};
@@ -400,7 +402,7 @@ async function saveContent(msg){
   catch(e){$('smsg').textContent='Could not save: '+emsg(e);}
   renderSite(); renderPane();
 }
-const norm=r=>({...r,_id:r.id,createdAt:r.created_at,meetLink:r.meet_link,sentVia:r.sent_via,sentAt:r.sent_at});
+const norm=r=>({...r,_id:r.id,createdAt:r.created_at,meetLink:r.meet_link,meetDate:r.meet_date,meetTime:r.meet_time,sentVia:r.sent_via,sentAt:r.sent_at});
 async function loadBookings(){
   if(!TOKEN) return;
   try{BK=(await sb('/rest/v1/bookings?select=*&order=created_at.desc',{admin:true})).map(norm);}
@@ -412,11 +414,10 @@ async function patch(id,data,msg){
   catch(e){$('smsg').textContent='Could not save: '+emsg(e);}
 }
 const setStatus=(id,st)=>patch(id,{status:st},'Booking set to '+st+'.');
-const markSent=(id,via)=>patch(id,{sent_via:via,sent_at:new Date().toISOString(),status:'Scheduled'},'Sent via '+via+'. Status set to Scheduled.');
-async function saveMeet(){
-  const v=$('mlink').value.trim();
-  if(v&&!/^https:\/\/meet\.google\.com\//.test(v)){$('smsg').textContent='Please paste a Google Meet link that starts with https://meet.google.com/';return;}
-  await patch(view,{meet_link:v},v?'Meet link saved. Now send the meeting details.':'Meet link cleared.');
+async function saveMeeting(){
+  const link=$('mlink').value.trim(), date=$('mdate').value, time=$('mtime').value;
+  if(link&&!/^https:\/\/meet\.google\.com\//.test(link)){$('smsg').textContent='Please paste a Google Meet link that starts with https://meet.google.com/';return;}
+  await patch(view,{meet_link:link||null,meet_date:date||null,meet_time:time||null},'Meeting details saved.');
 }
 async function deleteBooking(id){
   if(!confirm('Delete this booking permanently?')) return;
@@ -424,48 +425,88 @@ async function deleteBooking(id){
   catch(e){$('smsg').textContent='Could not delete: '+emsg(e);}
 }
 
-/* ===== 3. Project booking screens ===== */
+/* ===== 3. Links that open the customer’s mail, Gmail or WhatsApp ===== */
+const mailUrl=(to,s,b)=>`mailto:${to}?subject=${encodeURIComponent(s)}&body=${encodeURIComponent(b)}`;
+const gmailUrl=(to,s,b)=>`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(s)}&body=${encodeURIComponent(b)}`;
+const waUrl=(digits,b)=>`https://wa.me/${digits}?text=${encodeURIComponent(b)}`;
+function openLink(url,sameTab){const a=document.createElement('a');a.href=url;if(!sameTab){a.target='_blank';a.rel='noopener';}document.body.appendChild(a);a.click();a.remove();}
+const fmtDay=d=>{const x=new Date(d+'T00:00');return isNaN(x)?d:x.toLocaleDateString([],{weekday:'long',day:'numeric',month:'long',year:'numeric'});};
+const inviteText=(b,link,date,time)=>`Hi ${b.name||''},\n\nYour consultation with Coding Panda is confirmed. Here are the meeting details:\n\nDate: ${fmtDay(date)}\nTime: ${time}\nGoogle Meet link: ${link}\n\nPlease join a few minutes early. If you need to change the time, just reply to this message.\n\nBest regards,\nCoding Panda`;
+
+function contactCustomer(via){
+  const b=BK.find(x=>x._id===view); if(!b) return;
+  const digits=(b.phone||'').replace(/\D/g,''), subj='Your Coding Panda consultation';
+  const body=`Hi ${b.name||''},\n\nThank you for booking a consultation with Coding Panda. We would like to confirm the best time for your meeting.\n\nBest regards,\nCoding Panda`;
+  if(via==='wa'){if(!digits){$('smsg').textContent='This customer has no phone number.';return;} openLink(waUrl(digits,body),false);}
+  else if(via==='gmail') openLink(gmailUrl(b.email,subj,body),false);
+  else openLink(mailUrl(b.email,subj,body),true);
+}
+async function inviteCustomer(via){
+  const b=BK.find(x=>x._id===view); if(!b) return;
+  const link=$('mlink').value.trim(), date=$('mdate').value, time=$('mtime').value;
+  if(!/^https:\/\/meet\.google\.com\//.test(link)){$('smsg').textContent='Paste a valid Google Meet link first.';return;}
+  if(!date||!time){$('smsg').textContent='Choose the meeting date and time first.';return;}
+  const digits=(b.phone||'').replace(/\D/g,'');
+  if(via==='wa'&&!digits){$('smsg').textContent='This customer has no phone number.';return;}
+  const subj='Meeting invitation: Coding Panda consultation', body=inviteText(b,link,date,time);
+  const label={email:'Email',gmail:'Gmail',wa:'WhatsApp'}[via];
+  if(via==='wa') openLink(waUrl(digits,body),false);
+  else if(via==='gmail') openLink(gmailUrl(b.email,subj,body),false);
+  else openLink(mailUrl(b.email,subj,body),true);
+  await patch(view,{meet_link:link,meet_date:date,meet_time:time,sent_via:label,sent_at:new Date().toISOString(),status:'Scheduled'},'Invitation opened in '+label+'. Status set to Scheduled.');
+}
+
+/* ===== 4. Project booking screens ===== */
 const fmt=t=>{if(!t)return '-';const d=new Date(t);return isNaN(d)?String(t):d.toLocaleString([],{dateStyle:'medium',timeStyle:'short'});};
 const KV=[['Full name','name'],['Company','company'],['Email','email'],['Phone / WhatsApp','phone'],['Request type','type'],['Preferred contact','via'],['Meeting date','date'],['Meeting time','time'],['Free time','slots'],['Project details','details']];
 const kvRows=b=>KV.map(([l,k])=>`<div class="kv"><span>${l}</span><p>${esc(b[k]||'-')}</p></div>`).join('')+`<div class="kv"><span>Submitted</span><p>${esc(fmt(b.createdAt))}</p></div>`;
 const bkCard=b=>`<article class="bk" data-open="${esc(b._id)}" tabindex="0"><div class="bk-h"><b>${esc(b.name||'Unnamed')}</b><span class="st st-${esc(b.status)}">${esc(b.status)}</span></div>${kvRows(b)}<div class="open-hint">Open booking →</div></article>`;
-const meetMsg=b=>`Hi ${b.name}, your consultation with Coding Panda is confirmed.\n\nDate: ${b.date}\nTime: ${b.time}\nGoogle Meet link: ${b.meetLink}\n\nSee you there!\nCoding Panda`;
 function renderBookingPane(){
   if(!TOKEN){$('pane').innerHTML='<p class="lead">Sign in to see booking requests.</p>';return;}
   const b=view&&BK.find(x=>x._id===view);
   if(b) return renderBookingDetail(b);
   view=null;
-  $('pane').innerHTML=`<div class="row" style="justify-content:space-between"><b>${BK.length} booking request(s)</b><button class="btn" id="bref">Refresh</button></div><div class="bks">${BK.length?BK.map(bkCard).join(''):'<p class="lead">No bookings yet. New requests from the website appear here.</p>'}</div>`;
+  $('pane').innerHTML=`<div class="row" style="justify-content:space-between"><b>${BK.length} booking request(s)</b><button class="btn" id="bref">Refresh</button></div><div class="bks">${BK.length?BK.map(bkCard).join(''):'<p class="lead">No bookings yet. New requests appear here.</p>'}</div>`;
 }
 function renderBookingDetail(b){
-  const link=b.meetLink||'', msg=encodeURIComponent(link?meetMsg(b):''), digits=(b.phone||'').replace(/\D/g,'');
-  const mail=`mailto:${b.email}?subject=${encodeURIComponent('Your consultation is confirmed: Coding Panda')}&body=${msg}`;
-  const wa=digits?`https://wa.me/${digits}?text=${msg}`:'';
+  const link=b.meetLink||'';
   const sent=b.sentVia?`Last sent by ${esc(b.sentVia)} on ${esc(fmt(b.sentAt))}.`:'Not sent yet.';
   $('pane').innerHTML=`
   <div class="row" style="justify-content:space-between"><button class="btn" data-back="1">← Back to bookings</button><span class="st st-${esc(b.status)}">${esc(b.status)}</span></div>
   <h3 style="margin:16px 0 6px;font-size:1.5rem">${esc(b.name||'Unnamed')}</h3>
   <div>${kvRows(b)}</div>
+  <div class="sec"><b>Contact the customer directly</b>
+    <div class="row">
+      <button class="btn solid" data-contact="email">Email customer</button>
+      <button class="btn" data-contact="gmail">Gmail customer</button>
+      <button class="btn" data-contact="wa">WhatsApp customer</button>
+    </div></div>
   <div class="sec"><b>Booking status</b>
     <div class="row"><button class="btn solid" data-st="Accepted">Accept booking</button><button class="btn" data-st="Declined">Decline</button><button class="btn" data-st="Completed">Mark completed</button><button class="btn" data-st="Pending">Set pending</button></div>
     <p class="lead" style="margin:0">Current status: ${esc(b.status)}.</p></div>
-  <div class="sec"><b>Google Meet link</b>
-    <p class="lead" style="margin:0">Click Create Meet link, start the meeting, copy its link and paste it below.</p>
+  <div class="sec"><b>Meeting details</b>
     <div class="row"><a class="btn" href="https://meet.google.com/new" target="_blank" rel="noopener">Create Meet link ↗</a></div>
-    <div class="f"><label for="mlink">Meet link</label><input id="mlink" value="${esc(link)}" placeholder="https://meet.google.com/abc-defg-hij"></div>
-    <div class="row"><button class="btn solid" id="msave">Save Meet link</button></div></div>
-  <div class="sec"><b>Send meeting details</b>
-    <p class="lead" style="margin:0">${link?'Sends the date, time and Meet link to the visitor. '+sent:'Save a Meet link first to enable sending.'}</p>
+    <p class="lead" style="margin:0">Create the meeting, copy its link, then fill in the link, date and time below.</p>
+    <div class="adm">
+      <div class="f full"><label for="mlink">Google Meet link</label><input id="mlink" value="${esc(link)}" placeholder="https://meet.google.com/abc-defg-hij"></div>
+      <div class="f"><label for="mdate">Meeting date</label><input id="mdate" type="date" value="${esc(b.meetDate||'')}"></div>
+      <div class="f"><label for="mtime">Meeting time</label><input id="mtime" type="time" value="${esc(b.meetTime||'')}"></div>
+    </div>
+    <div class="row"><button class="btn" id="msave">Save meeting details</button></div></div>
+  <div class="sec"><b>Send meeting invitation</b>
+    <p class="lead" style="margin:0">Opens a ready-made invitation with the link, date and time above. ${sent}</p>
     <div class="row">
-      ${link?`<a class="btn solid" href="${esc(mail)}" target="_blank" rel="noopener" data-send="Email">Send by email</a>`:'<span class="btn" style="opacity:.5">Send by email</span>'}
-      ${link&&wa?`<a class="btn" href="${esc(wa)}" target="_blank" rel="noopener" data-send="WhatsApp">Send by WhatsApp</a>`:`<span class="btn" style="opacity:.5">${link?'No phone number':'Send by WhatsApp'}</span>`}
+      <button class="btn solid" data-inv="email">Invite by email</button>
+      <button class="btn" data-inv="gmail">Invite by Gmail</button>
+      <button class="btn" data-inv="wa">Invite by WhatsApp</button>
     </div></div>
   <div class="sec"><b>Delete</b><div class="row"><button class="btn" id="bdel" style="border-color:var(--red);color:var(--red)">Delete this booking</button></div></div>`;
 }
 
-/* ===== 4. Consultation form ===== */
+/* ===== 5. Consultation form ===== */
 const F=$('bform'), now=new Date();
 $('dt').min=new Date(now-now.getTimezoneOffset()*6e4).toISOString().slice(0,10);
+$('copyb').onclick=async()=>{try{await navigator.clipboard.writeText(LAST_TEXT);$('copyb').textContent='Copied!';}catch(_){$('copyb').textContent='Copy not allowed here';}};
 F.addEventListener('submit',e=>{
   e.preventDefault(); let bad=false;
   F.querySelectorAll('[required]').forEach(i=>{
@@ -474,9 +515,11 @@ F.addEventListener('submit',e=>{
   });
   if(bad) return;
   const slots=[...F.querySelectorAll('input[name=slot]:checked')].map(c=>c.value).join(', ')||'Not specified';
-  const name=$('n').value.trim(), typ=$('sv').value;
+  const name=$('n').value.trim(), typ=$('sv').value, subj=typ+' from '+name;
   const text=`Name: ${name}\nEmail: ${$('e').value}\nPhone: ${$('ph').value}\nCompany: ${$('co').value}\nRequest: ${typ}\nPreferred contact: ${$('cm').value}\nMeeting: ${$('dt').value} at ${$('tm').value}\nFree time: ${slots}\n\nProject details:\n${$('pd').value}`;
-  $('mail').href=`mailto:${C.contact.email}?subject=${encodeURIComponent(typ+' from '+name)}&body=${encodeURIComponent(text)}`;
+  LAST_TEXT=text;
+  $('mail').href=mailUrl(C.contact.email,subj,text);
+  $('gmail').href=gmailUrl(C.contact.email,subj,text);
   const row={id:'bk_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),name,email:$('e').value.trim(),phone:$('ph').value.trim(),company:$('co').value.trim(),type:typ,via:$('cm').value,date:$('dt').value,time:$('tm').value,slots,details:$('pd').value.trim(),status:'Pending',created_at:new Date().toISOString()};
   const saving=sb('/rest/v1/bookings',{method:'POST',prefer:'return=minimal',body:row}).then(()=>true,()=>false);
   $('okt').textContent=`Thanks, ${name}! Request received.`;
@@ -484,11 +527,11 @@ F.addEventListener('submit',e=>{
   requestAnimationFrame(()=>$('pbar').firstElementChild.style.width='100%');
   setTimeout(async()=>{
     F.classList.add('sent'); $('ok').classList.add('show');
-    $('okn').textContent=(await saving)?'Saved. Our team will confirm your slot soon.':'We could not save this request online. Please send the email draft above.';
+    $('okn').textContent=(await saving)?'Saved. Our team will confirm your slot soon.':'We could not save this request online. Please use one of the buttons below to send it to us.';
   },1500);
 });
 
-/* ===== 5. Admin console ===== */
+/* ===== 6. Admin console ===== */
 const openM=id=>$(id).classList.add('show'), closeM=el=>el.closest('.modal').classList.remove('show');
 $('logo').onclick=()=>{openM('login');setTimeout(()=>$('u').focus(),50);};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>closeM(b));
@@ -515,8 +558,8 @@ const fld=(k,l,v,t)=>{const id='f_'+k; let inp;
   else inp=`<input id="${id}" value="${esc(v)}">`;
   return `<div class="f${t==='ta'?' full':''}"><label for="${id}">${l}</label>${inp}</div>`;};
 function renderPane(){
-  if(tab==='booking'){document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));return renderBookingPane();}
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+  if(tab==='booking') return renderBookingPane();
   if(tab==='contact'){
     $('pane').innerHTML=`<div class="adm">${CF.map(([k,l])=>fld(k,l,C.contact[k]||'')).join('')}</div><div class="row" style="margin-top:18px"><button class="btn solid" id="sv">Save contact details</button></div>`;
     return;
@@ -528,12 +571,13 @@ function renderPane(){
   <div class="row" style="margin-top:18px"><button class="btn solid" id="sv">${editIdx>=0?'Update':'Add'} ${tab==='projects'?'project card':'app icon'}</button>${editIdx>=0?'<button class="btn" id="cn">Cancel</button>':''}</div>`;
 }
 $('pane').onclick=async e=>{
-  const b=e.target.closest('button,[data-open],[data-send]'); if(!b) return;
+  const b=e.target.closest('button,[data-open]'); if(!b) return;
   if(b.dataset.open){view=b.dataset.open;renderPane();return;}
   if(b.dataset.back){view=null;renderPane();return;}
   if(b.dataset.st) return setStatus(view,b.dataset.st);
-  if(b.dataset.send) return markSent(view,b.dataset.send);
-  if(b.id==='msave') return saveMeet();
+  if(b.dataset.contact) return contactCustomer(b.dataset.contact);
+  if(b.dataset.inv) return inviteCustomer(b.dataset.inv);
+  if(b.id==='msave') return saveMeeting();
   if(b.id==='bref') return loadBookings();
   if(b.id==='bdel') return deleteBooking(view);
   if(b.dataset.e!=null){editIdx=+b.dataset.e;renderPane();}
@@ -549,7 +593,7 @@ $('pane').onclick=async e=>{
 };
 $('pane').addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.dataset&&e.target.dataset.open){view=e.target.dataset.open;renderPane();}});
 
-/* ===== 6. Background motion ===== */
+/* ===== 7. Background motion ===== */
 const fx=$('fx'), g=fx.getContext('2d'); let PT=[];
 function fit(){fx.width=innerWidth;fx.height=innerHeight;const n=Math.min(innerWidth<700?30:70,Math.floor(innerWidth*innerHeight/26000));PT=Array.from({length:n},()=>({x:Math.random()*fx.width,y:Math.random()*fx.height,vx:(Math.random()-.5)*.35,vy:(Math.random()-.5)*.35}));}
 function frame(){
@@ -585,7 +629,7 @@ tick(); setInterval(tick,1000);
 $('burger').onclick=()=>$('links').classList.toggle('open');
 document.querySelectorAll('#links a').forEach(a=>a.onclick=()=>$('links').classList.remove('open'));
 
-/* ===== 7. Start ===== */
+/* ===== 8. Start ===== */
 renderSite();
 loadContent();
 
